@@ -4,6 +4,7 @@ open System
 open System.Diagnostics
 open System.Runtime.InteropServices
 open System.Threading
+open System.Text
 open Microsoft.Win32.SafeHandles
 
 [<StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode); Struct>]
@@ -73,6 +74,9 @@ module NativeMethods =
     [<DllImport("kernel32.dll", SetLastError = true)>]
     extern bool GetExitCodeProcess(nativeint hProcess, [<Out>] int& lpExitCode)
 
+    [<DllImport("psapi.dll", SetLastError = true)>]
+    extern int GetModuleFileNameEx(nativeint hProcess, nativeint hModule, [<Out>] StringBuilder lpBaseName, int nSize)
+
 type AnyWaitHandle(handle : nativeint, owns : bool) =
     inherit WaitHandle()
     do base.SafeWaitHandle <- new SafeWaitHandle(handle, owns)
@@ -97,15 +101,33 @@ module Program =
                 Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
 
             let e : DEBUG_EVENT = unbox (Marshal.PtrToStructure(buffer, typeof<DEBUG_EVENT>))
-            printfn "%O" e.dwDebugEventCode
+            
+            let go =
+                match e.dwDebugEventCode with
+                | DebugEventType.ExitProcessDebugEvent when e.dwProcessId = processId ->
+                    false
 
-            match e.dwDebugEventCode with
-            | DebugEventType.ExitProcessDebugEvent when e.dwProcessId = processId ->
-                ()
+                | DebugEventType.LoadDllDebugEvent ->
+                    let e : LOAD_DLL_DEBUG_INFO = unbox (Marshal.PtrToStructure(buffer, typeof<LOAD_DLL_DEBUG_INFO>))
+                    let sb = StringBuilder(260)
+                    match NativeMethods.GetModuleFileNameEx(hp.get_Handle(), e.lpBaseOfDll, sb, sb.Capacity) with
+                    | 0 ->
+                        //Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
+                        ()
+                    | n ->
+                        sb.Length <- n
+                        printfn "Load %O" sb
 
-            | _ ->
+                    true
+
+                | _ ->
+                    true
+
+            if go then
                 ignore (NativeMethods.ContinueDebugEvent(e.dwProcessId, e.dwThreadId, 0x80010001u))
                 run ()
+            else
+                ()
 
         try
             run ()
