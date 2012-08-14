@@ -31,17 +31,22 @@ type STARTUPINFO =
 type PROCESS_INFORMATION  =
    [<DefaultValue>] val mutable public hProcess : nativeint
    [<DefaultValue>] val mutable public hThread : nativeint
-   [<DefaultValue>] val mutable public dwProcessId : int
-   [<DefaultValue>] val mutable public dwThreadId : int
+   [<DefaultValue>] val mutable public dwProcessId : uint32
+   [<DefaultValue>] val mutable public dwThreadId : uint32
 
 type DebugEventType =
+    | ExitProcessDebugEvent = 5
     | LoadDllDebugEvent = 6
 
 [<StructLayout(LayoutKind.Sequential); Struct>]
+type DEBUG_EVENT =
+    [<DefaultValue>] val mutable public dwDebugEventCode : DebugEventType 
+    [<DefaultValue>] val mutable public dwProcessId : uint32
+    [<DefaultValue>] val mutable public dwThreadId : uint32
+
+[<StructLayout(LayoutKind.Sequential); Struct>]
 type LOAD_DLL_DEBUG_INFO =
-   [<DefaultValue>] val mutable public dwDebugEventCode : DebugEventType 
-   [<DefaultValue>] val mutable public dwProcessId : uint32
-   [<DefaultValue>] val mutable public dwThreadId : uint32
+   [<DefaultValue>] val mutable public DebugEvent : DEBUG_EVENT
    [<DefaultValue>] val mutable public hFile : nativeint
    [<DefaultValue>] val mutable public lpBaseOfDll : nativeint
    [<DefaultValue>] val mutable public dwDebugInfoFileOffset : uint32
@@ -60,7 +65,7 @@ module NativeMethods =
        [<Out>] PROCESS_INFORMATION& lpProcessInformation)
     
     [<DllImport("kernel32.dll", SetLastError = true)>]
-    extern bool WaitForDebugEvent(nativeint lpDebugEvent, uint32 dwMilliseconds)
+    extern bool WaitForDebugEvent(nativeint lpDebugEvent, int dwMilliseconds)
 
     [<DllImport("kernel32.dll", SetLastError = true)>]
     extern bool ContinueDebugEvent(uint32 dwProcessId, uint32 dwThreadId, uint32 dwContinueStatus)
@@ -83,7 +88,29 @@ module Program =
 
         use hp = new AnyWaitHandle(pi.hProcess, true)
         use ht = new AnyWaitHandle(pi.hThread, true)
-        ignore (hp.WaitOne())
+
+        let buffer = Marshal.AllocHGlobal(256)
+        let processId = pi.dwProcessId
+
+        let rec run () =
+            if not (NativeMethods.WaitForDebugEvent(buffer, Timeout.Infinite)) then
+                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
+
+            let e : DEBUG_EVENT = unbox (Marshal.PtrToStructure(buffer, typeof<DEBUG_EVENT>))
+            printfn "%O" e.dwDebugEventCode
+
+            match e.dwDebugEventCode with
+            | DebugEventType.ExitProcessDebugEvent when e.dwProcessId = processId ->
+                ()
+
+            | _ ->
+                ignore (NativeMethods.ContinueDebugEvent(e.dwProcessId, e.dwThreadId, 0x80010001u))
+                run ()
+
+        try
+            run ()
+        finally
+            Marshal.FreeHGlobal(buffer)
 
         let mutable exitCode = 0
         if not (NativeMethods.GetExitCodeProcess(pi.hProcess, &exitCode)) then
