@@ -117,11 +117,67 @@ module NativeMethods =
     [<DllImport("psapi.dll", SetLastError = true)>]
     extern int GetMappedFileName(nativeint hProcess, nativeint lpv, [<Out>] StringBuilder lpFilename, int nSize)
 
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern int GetLogicalDriveStrings(int nBufferLength, [<Out>] char[] lpBuffer)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern int QueryDosDevice(string lpDeviceName, [<Out>] char[] lpTargetPath, int ucchMax)
+
 type AnyWaitHandle(handle : nativeint, owns : bool) =
     inherit WaitHandle()
     do base.SafeWaitHandle <- new SafeWaitHandle(handle, owns)
 
 module Program =
+
+    let rawFileNameFromHandle (handle : SafeHandle) : string =
+        use hm = new SafeWaitHandle(NativeMethods.CreateFileMapping(handle.DangerousGetHandle(), IntPtr.Zero, FileMapProtection.PageReadonly, 0u, 1u, null), true)
+        use proc = Process.GetCurrentProcess()
+        let ptr = NativeMethods.MapViewOfFile(hm.DangerousGetHandle(), FileMapAccess.FileMapRead, 0u, 0u, 1u)
+        try
+            let sb = StringBuilder(260)
+            match NativeMethods.GetMappedFileName(proc.Handle, ptr, sb, sb.Capacity) with
+            | 0 ->
+                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
+                failwith "unreachable"
+
+            | n ->
+                sb.Length <- n
+                string sb
+
+        finally
+            ignore (NativeMethods.UnmapViewOfFile(ptr))
+
+    let fileNameFromHandle (handle : SafeHandle) : string =
+        let rawName = rawFileNameFromHandle handle
+        let a = Array.zeroCreate 260
+
+        let driveLetters =
+            match NativeMethods.GetLogicalDriveStrings(Array.length a - 1, a) with
+            | 0 ->
+                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
+                failwith "unreachable"
+
+            | n ->
+                String(a, 0, n - 1).Split('\000')
+
+        let picker (driveLetter : string) =
+            let driveLetter = driveLetter.TrimEnd('\\')
+
+            let parts =
+                match NativeMethods.QueryDosDevice(driveLetter, a, Array.length a) with
+                | 0 ->
+                    Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
+                    failwith "unreachable"
+
+                | n ->
+                    String(a, 0, n).Split('\000')
+
+            match List.ofArray parts with
+            | prefix :: _ when rawName.StartsWith(prefix) ->
+                Some (driveLetter + rawName.Substring(prefix.Length))
+            | _ -> None
+
+        defaultArg (Array.tryPick picker driveLetters) rawName
 
     [<EntryPoint>]
     let main args =
@@ -149,26 +205,8 @@ module Program =
 
                 | DebugEventType.LoadDllDebugEvent ->
                     let e : LOAD_DLL_DEBUG_INFO = unbox (Marshal.PtrToStructure(buffer, typeof<LOAD_DLL_DEBUG_INFO>))
-                    let filename =
-                        use hf = new SafeWaitHandle(e.hFile, true)
-                        use hm = new SafeWaitHandle(NativeMethods.CreateFileMapping(e.hFile, IntPtr.Zero, FileMapProtection.PageReadonly, 0u, 1u, null), true)
-                        use proc = Process.GetCurrentProcess()
-                        let ptr = NativeMethods.MapViewOfFile(hm.DangerousGetHandle(), FileMapAccess.FileMapRead, 0u, 0u, 1u)
-                        try
-                            let sb = StringBuilder(260)
-                            match NativeMethods.GetMappedFileName(proc.Handle, ptr, sb, sb.Capacity) with
-                            | 0 ->
-                                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
-                                failwith "unreachable"
-
-                            | n ->
-                                sb.Length <- n
-                                string sb
-
-                        finally
-                            ignore (NativeMethods.UnmapViewOfFile(ptr))
-
-                    printfn "Load %s" filename
+                    use hf = new SafeWaitHandle(e.hFile, true)
+                    printfn "Load %s" (fileNameFromHandle hf)
                     true
 
                 | _ ->
