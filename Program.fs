@@ -1,7 +1,9 @@
 ﻿#nowarn "9"
 
 open System
+open System.Collections.Generic
 open System.Diagnostics
+open System.IO
 open System.Runtime.InteropServices
 open System.Threading
 open System.Text
@@ -123,10 +125,6 @@ module NativeMethods =
     [<DllImport("kernel32.dll", SetLastError = true)>]
     extern int QueryDosDevice(string lpDeviceName, [<Out>] char[] lpTargetPath, int ucchMax)
 
-type AnyWaitHandle(handle : nativeint, owns : bool) =
-    inherit WaitHandle()
-    do base.SafeWaitHandle <- new SafeWaitHandle(handle, owns)
-
 module Program =
 
     let rawFileNameFromHandle (handle : SafeHandle) : string =
@@ -181,14 +179,47 @@ module Program =
 
     [<EntryPoint>]
     let main args =
+        let filename, processName, rest =
+            match List.ofArray args with
+            | filename :: processName :: rest -> filename, processName, rest
+            | _ -> failwithf "Usage: logdlls filename command [args...]"
+
+        use textWriter = File.CreateText(filename)
+        use mailbox =
+            let seen = HashSet()
+
+            let rec writer (mailbox : MailboxProcessor<_>) =
+                async {
+                    let! message = mailbox.Receive()
+                    match message with
+                    | Choice1Of2 fileHandle ->
+                        let filename =
+                            try
+                                fileNameFromHandle fileHandle
+                            finally
+                                fileHandle.Close()
+
+                        if not (seen.Add(filename)) then
+                            textWriter.WriteLine(filename)
+                            textWriter.Flush()
+
+                        return! writer mailbox
+
+                    | Choice2Of2 (reply : AsyncReplyChannel<_>) ->
+                        reply.Reply()
+                }
+
+            new MailboxProcessor<_>(writer)
+
+        mailbox.Start()
+
         let mutable si = STARTUPINFO(cb = Marshal.SizeOf(typeof<STARTUPINFO>), dwFlags = 1, wShowWindow = 5s)
         let mutable pi = PROCESS_INFORMATION()
-        if not (NativeMethods.CreateProcess(args.[0], (if args.Length > 1 then args.[1] else null), IntPtr.Zero, IntPtr.Zero, false, 1u, IntPtr.Zero, null, &si, &pi)) then
+        if not (NativeMethods.CreateProcess(processName, String.concat " " rest, IntPtr.Zero, IntPtr.Zero, false, 1u, IntPtr.Zero, null, &si, &pi)) then
             Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
 
-        use hp = new AnyWaitHandle(pi.hProcess, true)
-        use ht = new AnyWaitHandle(pi.hThread, true)
-
+        use hp = new SafeWaitHandle(pi.hProcess, true)
+        use ht = new SafeWaitHandle(pi.hThread, true)
         let buffer = Marshal.AllocHGlobal(256)
         let processId = pi.dwProcessId
 
@@ -205,8 +236,7 @@ module Program =
 
                 | DebugEventType.LoadDllDebugEvent ->
                     let e : LOAD_DLL_DEBUG_INFO = unbox (Marshal.PtrToStructure(buffer, typeof<LOAD_DLL_DEBUG_INFO>))
-                    use hf = new SafeWaitHandle(e.hFile, true)
-                    printfn "Load %s" (fileNameFromHandle hf)
+                    mailbox.Post(Choice1Of2 (new SafeWaitHandle(e.hFile, true)))
                     true
 
                 | _ ->
@@ -227,4 +257,5 @@ module Program =
         if not (NativeMethods.GetExitCodeProcess(pi.hProcess, &exitCode)) then
             Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
 
+        mailbox.PostAndReply(Choice2Of2)
         exitCode
