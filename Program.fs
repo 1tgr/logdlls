@@ -55,6 +55,26 @@ type LOAD_DLL_DEBUG_INFO =
    [<DefaultValue>] val mutable public lpImageName : nativeint
    [<DefaultValue>] val mutable public fUnicode : uint16
 
+[<Flags>]
+type FileMapProtection =
+    | PageReadonly = 0x02
+    | PageReadWrite = 0x04
+    | PageWriteCopy = 0x08
+    | PageExecuteRead = 0x20
+    | PageExecuteReadWrite = 0x40
+    | SectionCommit = 0x8000000
+    | SectionImage = 0x1000000
+    | SectionNoCache = 0x10000000
+    | SectionReserve = 0x4000000
+
+[<Flags>]
+type FileMapAccess =
+    | FileMapCopy = 0x0001
+    | FileMapWrite = 0x0002
+    | FileMapRead = 0x0004
+    | FileMapAllAccess = 0x001f
+    | FileMapExecute = 0x0020
+
 module NativeMethods =
 
     [<DllImport("kernel32.dll", SetLastError = true)>]
@@ -74,8 +94,28 @@ module NativeMethods =
     [<DllImport("kernel32.dll", SetLastError = true)>]
     extern bool GetExitCodeProcess(nativeint hProcess, [<Out>] int& lpExitCode)
 
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern IntPtr CreateFileMapping(
+        nativeint hFile,
+        nativeint lpFileMappingAttributes,
+        FileMapProtection flProtect,
+        uint32 dwMaximumSizeHigh,
+        uint32 dwMaximumSizeLow,
+        string lpName)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern nativeint MapViewOfFile(
+        nativeint hFileMappingObject,
+        FileMapAccess dwDesiredAccess,
+        uint32 dwFileOffsetHigh,
+        uint32 dwFileOffsetLow,
+        uint32 dwNumberOfBytesToMap)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool UnmapViewOfFile(nativeint lpBaseAddress)
+
     [<DllImport("psapi.dll", SetLastError = true)>]
-    extern int GetModuleFileNameEx(nativeint hProcess, nativeint hModule, [<Out>] StringBuilder lpBaseName, int nSize)
+    extern int GetMappedFileName(nativeint hProcess, nativeint lpv, [<Out>] StringBuilder lpFilename, int nSize)
 
 type AnyWaitHandle(handle : nativeint, owns : bool) =
     inherit WaitHandle()
@@ -109,15 +149,26 @@ module Program =
 
                 | DebugEventType.LoadDllDebugEvent ->
                     let e : LOAD_DLL_DEBUG_INFO = unbox (Marshal.PtrToStructure(buffer, typeof<LOAD_DLL_DEBUG_INFO>))
-                    let sb = StringBuilder(260)
-                    match NativeMethods.GetModuleFileNameEx(hp.get_Handle(), e.lpBaseOfDll, sb, sb.Capacity) with
-                    | 0 ->
-                        //Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
-                        ()
-                    | n ->
-                        sb.Length <- n
-                        printfn "Load %O" sb
+                    let filename =
+                        use hf = new SafeWaitHandle(e.hFile, true)
+                        use hm = new SafeWaitHandle(NativeMethods.CreateFileMapping(e.hFile, IntPtr.Zero, FileMapProtection.PageReadonly, 0u, 1u, null), true)
+                        use proc = Process.GetCurrentProcess()
+                        let ptr = NativeMethods.MapViewOfFile(hm.DangerousGetHandle(), FileMapAccess.FileMapRead, 0u, 0u, 1u)
+                        try
+                            let sb = StringBuilder(260)
+                            match NativeMethods.GetMappedFileName(proc.Handle, ptr, sb, sb.Capacity) with
+                            | 0 ->
+                                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error())
+                                failwith "unreachable"
 
+                            | n ->
+                                sb.Length <- n
+                                string sb
+
+                        finally
+                            ignore (NativeMethods.UnmapViewOfFile(ptr))
+
+                    printfn "Load %s" filename
                     true
 
                 | _ ->
