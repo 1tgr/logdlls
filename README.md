@@ -10,9 +10,9 @@ Latest build
 -----
 ### win32:
 
-Release: [logdlls.exe](https://ci.appveyor.com/api/projects/kotofos/logdlls/artifacts/bin%2FRelease%2Flogdlls.exe?job=Environment%3A%20CONFIGURATION%3DRelease%2C%20PLATFORM%3DWin32)
+Release: [logdlls.exe](https://ci.appveyor.com/api/projects/1tgr/logdlls/artifacts/bin%2FRelease%2Flogdlls.exe?job=Environment%3A%20CONFIGURATION%3DRelease%2C%20PLATFORM%3DWin32)
 
-Debug: [logdlls.exe](https://ci.appveyor.com/api/projects/kotofos/logdlls/artifacts/bin%2FRelease%2Flogdlls.exe?job=Environment%3A%20CONFIGURATION%3DDebug%2C%20PLATFORM%3DWin32)
+Debug: [logdlls.exe](https://ci.appveyor.com/api/projects/1tgr/logdlls/artifacts/bin%2FRelease%2Flogdlls.exe?job=Environment%3A%20CONFIGURATION%3DDebug%2C%20PLATFORM%3DWin32)
 
 
 How it works
