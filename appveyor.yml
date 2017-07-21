@@ -1,0 +1,10 @@
+version: 0.1.{build}
+configuration: Release
+platform: x86
+clone_depth: 1
+build:
+  project: logdlls.sln
+  verbosity: minimal
+artifacts:
+- path: bin\Release\logdlls.exe
+- path: bin\Debug\logdlls.exe
